@@ -1,0 +1,68 @@
+name: Daily Zameen scrape
+
+on:
+  schedule:
+    # 02:00 UTC = 07:00 PKT. Adjust to taste -- cron is in UTC.
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300  # 5h safety margin under GitHub's 6h hard cap
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create logs directory
+        run: mkdir -p logs
+
+      - name: Run sale spider
+        run: scrapy crawl zameen_sale --logfile logs/sale.log
+        continue-on-error: true  # still upload+email whatever the rent spider produces
+
+      - name: Run rent spider
+        run: scrapy crawl zameen_rent --logfile logs/rent.log
+        continue-on-error: true
+
+      - name: Install AWS CLI (for R2 upload)
+        if: always()
+        run: pip install awscli
+
+      - name: Upload output to Cloudflare R2
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -d output ]; then
+            aws s3 cp output/ "s3://${{ secrets.R2_BUCKET_NAME }}/" \
+              --recursive \
+              --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          fi
+          if [ -d logs ]; then
+            aws s3 cp logs/ "s3://${{ secrets.R2_BUCKET_NAME }}/logs/$(date +%d-%m-%Y)/" \
+              --recursive \
+              --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          fi
+
+      - name: Email run summary
+        if: always()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          SUMMARIES=$(find output -name "*_summary.txt" 2>/dev/null)
+          if [ -z "$SUMMARIES" ]; then
+            echo "No summary files found -- spiders likely failed before producing output." >&2
+            exit 1
+          fi
+          python scripts/send_summary_email.py $SUMMARIES
