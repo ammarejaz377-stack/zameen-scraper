@@ -1,0 +1,76 @@
+name: Test publish + email (no scraping)
+
+on:
+  workflow_dispatch: {}  # manual only -- this is a diagnostic tool, not scheduled
+
+env:
+  DATA_REPO: ammarejaz377-stack/zameen-data
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create fake output (stands in for a real scrape)
+        run: |
+          mkdir -p output/zameen_sale logs
+          STAMP=$(date +%d-%m-%Y_%H-%M)
+
+          echo "city,price" > "output/zameen_sale/${STAMP}.csv"
+          echo "Lahore,15000000" >> "output/zameen_sale/${STAMP}.csv"
+
+          echo "fake parquet content -- just testing upload, not a real parquet file" > "output/zameen_sale/${STAMP}.parquet"
+
+          cat > "output/zameen_sale/${STAMP}_summary.txt" <<EOF
+          TEST RUN -- this is a diagnostic run, not a real scrape.
+          Spider: zameen_sale (test)
+          Total listings: 1
+          EOF
+
+          cat > "output/zameen_sale/${STAMP}_summary.json" <<EOF
+          {
+            "spider": "zameen_sale_test",
+            "purpose": "for-sale",
+            "status": "ok",
+            "started_at": "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)",
+            "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)",
+            "duration_seconds": 1,
+            "total_listings": 1,
+            "error_count": 0,
+            "blocked_count": 0,
+            "csv_path": "output/zameen_sale/${STAMP}.csv",
+            "csv_size_bytes": 30,
+            "parquet_path": "output/zameen_sale/${STAMP}.parquet",
+            "parquet_size_bytes": 30,
+            "category_counts": [{"city": "Lahore", "category": "Houses", "count": 1}]
+          }
+          EOF
+
+          echo "test log line" > logs/test.log
+
+      - name: Publish data to the private data repo
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+        run: |
+          FILES=()
+          for f in output/zameen_sale/* logs/*.log; do
+            [ -e "$f" ] && FILES+=("$f")
+          done
+
+          TAG="test-$(date +%d-%m-%Y_%H-%M)"
+          gh release create "$TAG" "${FILES[@]}" \
+            --repo "$DATA_REPO" \
+            --title "TEST run $(date +%d-%m-%Y\ %H:%M) UTC" \
+            --notes "Diagnostic test run -- not real scraped data."
+
+      - name: Email run summary
+        if: always()
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          SUMMARIES=$(find output -name "*_summary.txt")
+          python scripts/send_summary_email.py $SUMMARIES
