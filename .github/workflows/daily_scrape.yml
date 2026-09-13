@@ -2,8 +2,8 @@ name: Daily Zameen scrape
 
 on:
   schedule:
-    # 13:15 UTC = 18:15 PKT. Adjust to taste -- cron is in UTC.
-    - cron: "15 13 * * *"
+    # 13:30 UTC = 18:30 PKT. Adjust to taste -- cron is in UTC.
+    - cron: "30 13 * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 env:
@@ -22,6 +22,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Notify run started
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          python scripts/send_notification.py \
+            "Zameen scraper run started" \
+            "The daily scrape started at $(date -u +'%d-%m-%Y %H:%M:%S') UTC. Expect roughly 1-1.5 hours to complete."
 
       - name: Install dependencies
         run: pip install -r requirements.txt
