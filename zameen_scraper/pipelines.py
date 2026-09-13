@@ -1,4 +1,5 @@
 import csv
+import json
 import logging
 import os
 from collections import Counter
@@ -65,6 +66,7 @@ class CsvParquetExportPipeline:
         self.csv_path = self.out_dir / f"{self.run_stamp}.csv"
         self.parquet_path = self.out_dir / f"{self.run_stamp}.parquet"
         self.summary_path = self.out_dir / f"{self.run_stamp}_summary.txt"
+        self.summary_json_path = self.out_dir / f"{self.run_stamp}_summary.json"
 
         self.csv_file = open(self.csv_path, "w", newline="", encoding="utf-8")
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=FIELD_ORDER, extrasaction="ignore")
@@ -98,7 +100,8 @@ class CsvParquetExportPipeline:
         self.parquet_writer.close()
         self.csv_file.close()
 
-        summary = self._build_summary(spider)
+        stats = self._build_stats(spider)
+        summary = self._render_summary_text(stats)
         # Printed directly (not via logger) so it's guaranteed to show in the
         # terminal even when running with --logfile, which redirects the
         # logging handler to a file. Also logged, and written to its own
@@ -107,42 +110,73 @@ class CsvParquetExportPipeline:
         print(summary)
         logger.info(summary)
         self.summary_path.write_text(summary, encoding="utf-8")
+        # Structured twin of the same data, for anything that wants to parse
+        # it programmatically (e.g. a dashboard) instead of the text block.
+        self.summary_json_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
     def _flush_parquet_row_group(self):
         table = pa.Table.from_pylist(self.buffer, schema=self.schema)
         self.parquet_writer.write_table(table)
         self.buffer = []
 
-    def _build_summary(self, spider):
+    def _build_stats(self, spider) -> dict:
         finished_at = datetime.now(timezone.utc)
-        duration = finished_at - self.started_at
-        minutes, seconds = divmod(int(duration.total_seconds()), 60)
+        duration_seconds = int((finished_at - self.started_at).total_seconds())
 
-        csv_size_mb = os.path.getsize(self.csv_path) / (1024 * 1024)
-        parquet_size_mb = os.path.getsize(self.parquet_path) / (1024 * 1024)
         error_count = getattr(spider, "error_count", 0)
         blocked_count = getattr(spider, "blocked_count", 0)
-        status = "ABORTED (blocked/CAPTCHA threshold hit)" if blocked_count >= MAX_BLOCKED_RESPONSES else "OK"
+        status = "aborted_blocked" if blocked_count >= MAX_BLOCKED_RESPONSES else "ok"
+
+        return {
+            "spider": spider.name,
+            "purpose": getattr(spider, "purpose", None),
+            "status": status,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_seconds": duration_seconds,
+            "total_listings": self.total_written,
+            "error_count": error_count,
+            "blocked_count": blocked_count,
+            "csv_path": str(self.csv_path),
+            "csv_size_bytes": os.path.getsize(self.csv_path),
+            "parquet_path": str(self.parquet_path),
+            "parquet_size_bytes": os.path.getsize(self.parquet_path),
+            "category_counts": [
+                {"city": city, "category": category, "count": count}
+                for (city, category), count in sorted(
+                    self.category_counts.items(), key=lambda x: -x[1]
+                )
+            ],
+        }
+
+    @staticmethod
+    def _render_summary_text(stats: dict) -> str:
+        minutes, seconds = divmod(stats["duration_seconds"], 60)
+        started = datetime.fromisoformat(stats["started_at"]).strftime("%d-%m-%Y %H:%M:%S")
+        finished = datetime.fromisoformat(stats["finished_at"]).strftime("%d-%m-%Y %H:%M:%S")
+        status_label = (
+            "ABORTED (blocked/CAPTCHA threshold hit)" if stats["status"] == "aborted_blocked" else "OK"
+        )
 
         lines = [
             "=" * 70,
             "ZAMEEN SCRAPER RUN SUMMARY",
             "=" * 70,
-            f"Spider:          {spider.name} ({getattr(spider, 'purpose', '?')})",
-            f"Status:          {status}",
-            f"Started:         {self.started_at.strftime('%d-%m-%Y %H:%M:%S')} UTC",
-            f"Finished:        {finished_at.strftime('%d-%m-%Y %H:%M:%S')} UTC",
+            f"Spider:          {stats['spider']} ({stats['purpose']})",
+            f"Status:          {status_label}",
+            f"Started:         {started} UTC",
+            f"Finished:        {finished} UTC",
             f"Duration:        {minutes}m {seconds}s",
-            f"Total listings:  {self.total_written:,}",
-            f"Failed requests: {error_count}  (of which blocked/CAPTCHA: {blocked_count})",
+            f"Total listings:  {stats['total_listings']:,}",
+            f"Failed requests: {stats['error_count']}  (of which blocked/CAPTCHA: {stats['blocked_count']})",
             "",
-            f"CSV:     {self.csv_path}  ({csv_size_mb:.1f} MB)",
-            f"Parquet: {self.parquet_path}  ({parquet_size_mb:.1f} MB)",
+            f"CSV:     {stats['csv_path']}  ({stats['csv_size_bytes'] / (1024 * 1024):.1f} MB)",
+            f"Parquet: {stats['parquet_path']}  ({stats['parquet_size_bytes'] / (1024 * 1024):.1f} MB)",
             "",
             "Breakdown by city / category:",
         ]
-        for (city, category), count in sorted(self.category_counts.items(), key=lambda x: -x[1]):
-            lines.append(f"  {city or '?':<15} {category or '?':<20} {count:>8,}")
+        for row in stats["category_counts"]:
+            lines.append(f"  {row['city'] or '?':<15} {row['category'] or '?':<20} {row['count']:>8,}")
         lines.append("=" * 70)
         return "\n".join(lines)
 
