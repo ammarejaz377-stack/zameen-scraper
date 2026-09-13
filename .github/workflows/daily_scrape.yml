@@ -2,8 +2,8 @@ name: Daily Zameen scrape
 
 on:
   schedule:
-    # 13:30 UTC = 18:30 PKT. Adjust to taste -- cron is in UTC.
-    - cron: "30 13 * * *"
+    # 14:32 UTC = 19:32 PKT. Adjust to taste -- cron is in UTC.
+    - cron: "32 14 * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 env:
