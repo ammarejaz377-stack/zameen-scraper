@@ -1,10 +1,13 @@
 name: Daily Zameen scrape
 
 on:
-  schedule:
-    # 14:32 UTC = 19:32 PKT. Adjust to taste -- cron is in UTC.
-    - cron: "32 14 * * *"
-  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
+  # No schedule: trigger here -- GitHub's native cron scheduler proved
+  # unreliable (confirmed via the Actions API: it silently failed to fire
+  # on two separate attempts despite correct config and ample lead time).
+  # An external cron service (cron-job.org) calls workflow_dispatch below
+  # on a schedule instead -- same trigger type that has fired reliably
+  # every time it's been used manually.
+  workflow_dispatch: {}
 
 env:
   # Private repo used purely as a data drop (Releases), so this public repo's
